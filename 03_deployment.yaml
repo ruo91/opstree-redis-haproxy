@@ -1,0 +1,192 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: haproxy
+  namespace: redis
+  labels:
+    app: haproxy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: haproxy
+      annotations:
+        k8s.v1.cni.cncf.io/networks: redis-haproxy-multus-ipvlan
+    spec:
+      restartPolicy: Always
+      initContainers:
+        - name: sysctl-tuner
+          image: 'registry.ocp4.local:5000/haproxytech/haproxy-ubuntu-quic-custom:3.2'
+          command:
+            - sh
+            - '-c'
+            - |
+              # Use BBR TCP congestion control algorithm for better throughput and lower latency
+              sysctl -w net.ipv4.tcp_congestion_control=bbr
+
+              # Set the maximum number of connections that can be queued for acceptance
+              sysctl -w net.core.somaxconn=1048576
+
+              # Maximum number of remembered connection requests not yet acknowledged
+              sysctl -w net.ipv4.tcp_max_syn_backlog=65536
+
+              # Allow binding to non-local IP addresses (useful for high availability or VIPs)
+              sysctl -w net.ipv4.ip_nonlocal_bind=1
+
+              # Set TCP receive buffer size: min, default, max
+              sysctl -w net.ipv4.tcp_rmem="4096 262144 16777216"
+
+              # Set TCP send buffer size: min, default, max
+              sysctl -w net.ipv4.tcp_wmem="4096 262144 16777216"
+
+              # Enable reuse of TIME_WAIT sockets for new connections
+              sysctl -w net.ipv4.tcp_tw_reuse=1
+
+              # Set time to wait before closing a connection in FIN-WAIT-2 state
+              sysctl -w net.ipv4.tcp_fin_timeout=10
+
+              # Time in seconds before sending keepalive probes
+              sysctl -w net.ipv4.tcp_keepalive_time=600
+
+              # Number of keepalive probes sent before considering the connection dead
+              sysctl -w net.ipv4.tcp_keepalive_probes=3
+
+              # Interval between individual keepalive probes
+              sysctl -w net.ipv4.tcp_keepalive_intvl=15
+
+              # Enable SYN cookies to protect against SYN flood attacks
+              sysctl -w net.ipv4.tcp_syncookies=1
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            seccompProfile:
+              type: Unconfined
+      serviceAccountName: haproxy
+      schedulerName: default-scheduler
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/worker
+                    operator: Exists
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        fsGroup: 0
+        seccompProfile:
+          type: Unconfined
+      containers:
+        - resources:
+            limits:
+              cpu: '4'
+              memory: 8Gi
+            requests:
+              cpu: '4'
+              memory: 8Gi
+          readinessProbe:
+            tcpSocket:
+              port: 1936
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          terminationMessagePath: /dev/termination-log
+          name: haproxy
+          command:
+            - sh
+            - '-c'
+            - |
+              python3 /usr/local/bin/generate.py \
+              --template /haproxy/haproxy-template.cfg \
+              --output /haproxy/haproxy.cfg
+              exec /usr/local/sbin/haproxy -f /haproxy/haproxy.cfg
+          livenessProbe:
+            tcpSocket:
+              port: 1936
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          ports:
+            - name: status
+              containerPort: 1936
+              protocol: TCP
+            - name: master
+              containerPort: 6379
+              protocol: TCP
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: haproxy-template
+              mountPath: /haproxy/haproxy-template.cfg
+              subPath: haproxy-template.cfg
+          terminationMessagePolicy: File
+          image: 'registry.ocp4.local:5000/haproxytech/haproxy-ubuntu-quic-custom:3.2'
+      serviceAccount: haproxy
+      volumes:
+        - name: haproxy-template
+          configMap:
+            name: haproxy-template
+            defaultMode: 420
+      dnsPolicy: ClusterFirst
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: haproxy
+  namespace: redis
+spec:
+  externalTrafficPolicy: Cluster
+  ipFamilies:
+    - IPv4
+  ports:
+    - name: status
+      protocol: TCP
+      port: 1936
+      targetPort: 1936
+      nodePort: 31936
+    - name: master
+      protocol: TCP
+      port: 6379
+      targetPort: 6379
+      nodePort: 30011
+  internalTrafficPolicy: Cluster
+  type: NodePort
+  ipFamilyPolicy: SingleStack
+  sessionAffinity: None
+  selector:
+    app: haproxy
+---
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: redis-haproxy
+  namespace: redis
+spec:
+  host: redis-haproxy.apps.ocp4.local
+  to:
+    kind: Service
+    name: haproxy
+    weight: 100
+  port:
+    targetPort: status
+  wildcardPolicy: None
