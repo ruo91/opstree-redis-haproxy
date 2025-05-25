@@ -63,7 +63,7 @@ spec:
               sysctl -w net.ipv4.tcp_syncookies=1
 
               # Enable TCP Fast Open
-              sysctl -w net.ipv4.tcp_fastopen=3
+              sysctl -w net.ipv4.tcp_fastopen=1
           resources: {}
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
