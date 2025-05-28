@@ -61,12 +61,13 @@ spec:
 
               # Enable SYN cookies to protect against SYN flood attacks
               sysctl -w net.ipv4.tcp_syncookies=1
-<<<<<<< HEAD
 
               # Enable TCP Fast Open
-              sysctl -w net.ipv4.tcp_fastopen=1
-=======
->>>>>>> parent of e8386c2 (Add: sysctl config for TCP Fast Open (net.ipv4.tcp_fastopen))
+              # 0: disable
+              # 1: enable client
+              # 2: enable server
+              # 3: enable client, server
+              sysctl -w net.ipv4.tcp_fastopen=3
           resources: {}
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
